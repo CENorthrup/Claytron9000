@@ -1,0 +1,13 @@
+{
+  "role": "reviewer",
+  "app_id": 123456,
+  "app_slug": "claytron-reviewer-abc123",
+  "account_login": "your-github-account",
+  "installation_id": 987654,
+  "repositories": ["OWNER/REPOSITORY"],
+  "permissions": {
+    "metadata": "read",
+    "pull_requests": "write"
+  },
+  "private_key_path": "/home/you/.config/claytron9000/github-apps/reviewer/private-key.pem"
+}
