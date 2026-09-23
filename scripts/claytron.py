@@ -11,6 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Forward nested command options without making the top-level parser
+    # reinterpret role-specific flags such as --role and --repository.
+    if argv[:2] == ["setup", "github"]:
+        return subprocess.call([sys.executable, str(ROOT / "scripts/setup-github.py"), *argv[2:]])
+    if argv[:2] == ["github", "repository"]:
+        return subprocess.call([sys.executable, str(ROOT / "scripts/manage-installation.py"), *argv[2:]])
     parser = argparse.ArgumentParser(prog="claytron")
     subparsers = parser.add_subparsers(dest="command", required=True)
     setup = subparsers.add_parser("setup")
