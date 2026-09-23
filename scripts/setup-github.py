@@ -44,6 +44,12 @@ def conversion(code: str):
     return result
 
 
+def app_settings_url(slug: str) -> str:
+    if not isinstance(slug, str) or not slug:
+        raise GitHubError("GitHub App response lacked a valid slug.")
+    return f"https://github.com/settings/apps/{urllib.parse.quote(slug, safe='')}"
+
+
 class Setup:
     def __init__(self, args):
         self.args = args
@@ -150,18 +156,21 @@ class Setup:
                             reason="GitHub requires the account owner to choose the installation scope.",
                             approval=f"Install only these selected repositories: {', '.join(setup.repositories)}.",
                             requested_permissions=[f"{key}: {value}" for key, value in setup.definition["permissions"].items()],
-                            user_action="Select Only select repositories, choose the requested repositories, and click Install.",
+                            user_action=f"Open the App settings page at {app_settings_url(response.get('slug'))}, click Install App, select Only select repositories, choose the requested repositories, and click Install.",
                             completion_check="GitHub redirects to this local callback and Claytron verifies selected scope and permissions.",
                             next_step="Claytron records the installation ID and marks the role ready.",
                         )
                         setup.install_gate = install_gate
                         setup.gate_store.save(install_gate)
-                        install_url = f"https://github.com/apps/{urllib.parse.quote(response['slug'], safe='')}/installations/new"
+                        # Private Apps owned by the current account are installed
+                        # from their account-specific settings page. The public
+                        # /apps/<slug>/installations/new route may return 404.
+                        install_url = app_settings_url(response.get("slug"))
                         print(install_gate.display())
-                        print(f"Install URL: {install_url}")
+                        print(f"App settings URL (then click Install App): {install_url}")
                         if not setup.args.no_browser:
                             webbrowser.open(install_url)
-                        self.send_text(200, "App created. Complete the selected-repository installation gate in GitHub.")
+                        self.send_text(200, f"App created. Open {install_url}, click Install App, and complete the selected-repository installation gate in GitHub.")
                         return
                     if path == "/install-callback":
                         installation_id = query.get("installation_id", [""])[0]
