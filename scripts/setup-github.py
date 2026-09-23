@@ -133,6 +133,16 @@ class Setup:
                         config_path = store_app_config(setup.config_root, setup.role, response,
                                                        setup.args.account, setup.repositories,
                                                        setup.definition["permissions"])
+                        try:
+                            config = json.loads(config_path.read_text())
+                            GitHubClient(config, setup.role).verify_identity()
+                        except Exception:
+                            # Do not leave credentials from a registration that
+                            # cannot be authenticated by the returned App.
+                            key_path = config_path.parent / "private-key.pem"
+                            config_path.unlink(missing_ok=True)
+                            key_path.unlink(missing_ok=True)
+                            raise GitHubError("GitHub created an App that Claytron could not authenticate; check the browser account and retry.") from None
                         setup.gate.complete({"step": "app-created", "role": setup.role})
                         setup.gate_store.save(setup.gate)
                         install_gate = HumanGate.create(
