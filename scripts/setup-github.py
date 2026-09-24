@@ -118,10 +118,13 @@ class Setup:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def redirect_to_installation(self, url):
-                body = confirmation_page("Claytron App registered", "Continue to installation",
-                                         ["Registration verified. Continue to GitHub and select the requested repositories."])
-                body += f'<p><a href="{html.escape(url, quote=True)}">Continue to GitHub installation</a></p>'.encode()
+            def redirect_to_installation(self, url, verified=False):
+                body = confirmation_page(
+                    "Claytron setup complete" if verified else "Claytron App registered",
+                    "Installation verified" if verified else "Continue to installation",
+                    ["Installation verified. Returning to the GitHub App page." if verified else
+                     "Registration verified. Continue to GitHub and select the requested repositories."])
+                body += f'<p><a href="{html.escape(url, quote=True)}">Continue to GitHub App</a></p>'.encode()
                 self.send_response(303)
                 self.send_header("Location", url)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -206,10 +209,10 @@ class Setup:
                         setup.install_gate.complete({"step": "installation-verified", "repositories": verification["repositories"]})
                         setup.gate_store.save(setup.install_gate)
                         setup.finished.set()
-                        self.send_page(200, "Claytron setup complete", "Installation verified",
-                                       [f"{setup.definition['app_name']} is installed for {setup.args.account}.",
-                                        "Claytron verified the selected repositories and requested permissions.",
-                                        "You may close this window. The setup command has completed."])
+                        print(f"Installation verified for {config['app_slug']}.")
+                        self.redirect_to_installation(
+                            app_settings_url(config["app_slug"]).removesuffix("/installations"),
+                            verified=True)
                         return
                     self.send_page(404, "Claytron setup", "Page not found",
                                    ["This Claytron setup callback is no longer active.",

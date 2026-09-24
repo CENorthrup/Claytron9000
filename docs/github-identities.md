@@ -49,7 +49,9 @@ Claytron performs the setup around two unavoidable GitHub actions:
    session used to register the App. The user chooses the owning account and **Only select repositories** in GitHub. GitHub
    redirects to the loopback callback, and Claytron verifies the installation
    account, selected mode, exact repositories, and exact permissions before
-   marking the role ready.
+   marking the role ready. After recording successful verification, Claytron redirects
+   the browser back to the registered App’s GitHub settings page. Failures remain
+   on the local error page rather than redirecting as though setup succeeded.
 
 The gates are auditable JSON state records under
 `~/.local/state/claytron9000/gates` with mode 700 directories and mode 600

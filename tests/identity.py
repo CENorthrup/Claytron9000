@@ -38,6 +38,20 @@ class SetupTests(unittest.TestCase):
         handler.send_header.assert_any_call("Referrer-Policy", "no-referrer")
         self.assertIn(f'href="{url}"', handler.wfile.getvalue().decode())
 
+    def test_verified_installation_redirects_to_app_page(self):
+        handler_class = setup.Setup.handler(SimpleNamespace())
+        handler = object.__new__(handler_class)
+        handler.wfile = io.BytesIO()
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        url = "https://github.com/settings/apps/claytron-reviewer"
+        handler.redirect_to_installation(url, verified=True)
+        handler.send_response.assert_called_once_with(303)
+        handler.send_header.assert_any_call("Location", url)
+        self.assertIn("Installation verified", handler.wfile.getvalue().decode())
+        self.assertIn(f'href="{url}"', handler.wfile.getvalue().decode())
+
     def test_setup_requires_selected_repositories(self):
         with tempfile.TemporaryDirectory() as directory:
             args = type("Args", (), {"role": "reviewer", "repositories": [], "config_root": directory,
