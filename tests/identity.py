@@ -20,7 +20,7 @@ from claytron.github import GitHubError  # noqa: E402
 class SetupTests(unittest.TestCase):
     def test_registered_app_uses_account_settings_url_for_installation(self):
         self.assertEqual(setup.app_settings_url("claytron-worker"),
-                         "https://github.com/settings/apps/claytron-worker")
+                         "https://github.com/settings/apps/claytron-worker/installations")
         with self.assertRaises(GitHubError):
             setup.app_settings_url("")
 

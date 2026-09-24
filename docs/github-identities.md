@@ -44,10 +44,9 @@ Claytron performs the setup around two unavoidable GitHub actions:
    one-time manifest code, stores the returned App ID, slug, and private key,
    and never prints the response.
 2. Claytron presents a second `HUMAN_GATE` with the exact selected repository
-   scope and the App settings URL. The registration callback redirects the same browser
-   to that settings page (with a clickable fallback link), preserving the GitHub
-   session used to register the App. The user clicks
-   **Install App**, and chooses **Only select repositories** in GitHub. GitHub
+   scope and the App installation URL. The registration callback redirects the same browser
+   to the App’s **Install App** page (with a clickable fallback link), preserving the GitHub
+   session used to register the App. The user chooses the owning account and **Only select repositories** in GitHub. GitHub
    redirects to the loopback callback, and Claytron verifies the installation
    account, selected mode, exact repositories, and exact permissions before
    marking the role ready.

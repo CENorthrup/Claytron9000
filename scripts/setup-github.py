@@ -47,7 +47,7 @@ def conversion(code: str):
 def app_settings_url(slug: str) -> str:
     if not isinstance(slug, str) or not slug:
         raise GitHubError("GitHub App response lacked a valid slug.")
-    return f"https://github.com/settings/apps/{urllib.parse.quote(slug, safe='')}"
+    return f"https://github.com/settings/apps/{urllib.parse.quote(slug, safe='')}/installations"
 
 
 def confirmation_page(title: str, heading: str, paragraphs: list[str]) -> bytes:
@@ -121,7 +121,7 @@ class Setup:
             def redirect_to_installation(self, url):
                 body = confirmation_page("Claytron App registered", "Continue to installation",
                                          ["Registration verified. Continue to GitHub and select the requested repositories."])
-                body += f'<p><a href="{html.escape(url, quote=True)}">Open App settings to install</a></p>'.encode()
+                body += f'<p><a href="{html.escape(url, quote=True)}">Continue to GitHub installation</a></p>'.encode()
                 self.send_response(303)
                 self.send_header("Location", url)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -176,7 +176,7 @@ class Setup:
                             reason="GitHub requires the account owner to choose the installation scope.",
                             approval=f"Install only these selected repositories: {', '.join(setup.repositories)}.",
                             requested_permissions=[f"{key}: {value}" for key, value in setup.definition["permissions"].items()],
-                            user_action=f"Open the App settings page at {app_settings_url(response.get('slug'))}, click Install App, select Only select repositories, choose the requested repositories, and click Install.",
+                            user_action=f"Open the App installation page at {app_settings_url(response.get('slug'))}, choose the owning account, select Only select repositories, choose the requested repositories, and click Install.",
                             completion_check="GitHub redirects to this local callback and Claytron verifies selected scope and permissions.",
                             next_step="Claytron records the installation ID and marks the role ready.",
                         )
@@ -187,7 +187,7 @@ class Setup:
                         # /apps/<slug>/installations/new route may return 404.
                         install_url = app_settings_url(response.get("slug"))
                         print(install_gate.display())
-                        print(f"App settings URL (then click Install App): {install_url}")
+                        print(f"App installation URL: {install_url}")
                         self.redirect_to_installation(install_url)
                         return
                     if path == "/install-callback":
