@@ -11,3 +11,10 @@ submit-agent-review *args:
 # Exercise reviewer authentication and submission offline with generated test keys.
 test-agent-review:
     bash tests/agent-review.sh
+    python3 -B tests/identity.py
+
+setup-github *args:
+    python3 scripts/claytron.py setup github {{args}}
+
+worker *args:
+    python3 scripts/worker.py {{args}}

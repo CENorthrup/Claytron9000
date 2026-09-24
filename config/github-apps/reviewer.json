@@ -1,0 +1,13 @@
+{
+  "role": "reviewer",
+  "app_name": "claytron-reviewer",
+  "description": "Claytron9000 independent review identity",
+  "homepage_url": "https://github.com",
+  "permissions": {
+    "metadata": "read",
+    "pull_requests": "write"
+  },
+  "events": [],
+  "public": false,
+  "repository_selection": "selected"
+}

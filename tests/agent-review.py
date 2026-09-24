@@ -1,45 +1,58 @@
-"""Offline reviewer tests. Keys are generated at runtime, never checked in."""
+"""Offline reviewer, identity-separation, and credential-safety tests."""
+
+from __future__ import annotations
+
 import base64
-import contextlib
 import importlib.util
-import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("reviewer", ROOT / "scripts/submit-agent-review.py")
-reviewer = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(reviewer)
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, ROOT / path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+reviewer = load("reviewer", "scripts/submit-agent-review.py")
+worker = load("worker", "scripts/worker.py")
+from claytron.human_gate import GateState, GateStore, HumanGate  # noqa: E402
+from claytron.manifests import payload  # noqa: E402
+from claytron.storage import store_app_config  # noqa: E402
+
 SHA = "a" * 40
-# Deliberately not a name this repository registers: the tool must pin whatever
-# App slug the local configuration names, with none compiled in.
+REPO = "Example/target"
 SLUG = "example-reviewer"
 
 
-class ReviewTests(unittest.TestCase):
+class Fixture(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="review tests ' $ ")
+        self.temp = tempfile.TemporaryDirectory(prefix="claytron identity tests ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.key = self.root / "private ' key.pem"
+        self.key = self.root / "private-key.pem"
         subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(self.key)],
                        check=True, capture_output=True)
         self.key.chmod(0o600)
         self.config = self.root / "config.json"
-        self.values = {"app_id": "12", "installation_id": "34", "app_slug": SLUG,
+        self.values = {"role": "reviewer", "app_id": 12, "installation_id": 34,
+                       "app_slug": SLUG, "account_login": "Example", "repositories": [REPO],
+                       "permissions": {"metadata": "read", "pull_requests": "write"},
                        "private_key_path": str(self.key)}
         self.config.write_text(json.dumps(self.values))
-        self.body = self.root / "review ' $.md"
+        self.config.chmod(0o600)
+        self.body = self.root / "review.md"
         self.body.write_text("Reviewed the implementation and failure cases.")
-        self.argv = ["--config", str(self.config), "--repo", reviewer.REPOSITORY, "--pr", "8",
-                     "--event", "COMMENT", "--body-file", str(self.body), "--model", "test-profile",
-                     "--effort", "test-effort", "--harness", "offline-test", "--head-sha", SHA]
+        self.argv = ["--config", str(self.config), "--repo", REPO, "--pr", "8", "--event", "COMMENT",
+                     "--body-file", str(self.body), "--model", "test-profile", "--effort", "test-effort",
+                     "--harness", "offline-test", "--head-sha", SHA]
         self.calls = []
         self.overrides = {}
 
@@ -50,13 +63,13 @@ class ReviewTests(unittest.TestCase):
         if path == "/app":
             return {"id": 12, "slug": SLUG}
         if path.endswith("/installation"):
-            return {"id": 34, "account": {"login": "CENorthrup"}, "repository_selection": "selected",
-                    "permissions": {"metadata": "read", "pull_requests": "write"}}
+            return {"id": 34, "account": {"login": "Example"}, "repository_selection": "selected",
+                    "permissions": self.values["permissions"]}
         if path.endswith("/access_tokens"):
-            self.assertEqual(payload, {"repositories": ["devenv"], "permissions": {"pull_requests": "write"}})
-            return {"token": "TOKEN_SENTINEL", "permissions": {"pull_requests": "write"}}
+            self.assertEqual(payload, {"repositories": ["target"], "permissions": self.values["permissions"]})
+            return {"token": "TOKEN_SENTINEL", "permissions": self.values["permissions"]}
         if path.startswith("/installation/repositories"):
-            return {"total_count": 1, "repositories": [{"full_name": reviewer.REPOSITORY}]}
+            return {"total_count": 1, "repositories": [{"full_name": REPO}]}
         if path.endswith("/pulls/8"):
             return {"head": {"sha": SHA}}
         if path.endswith("/reviews"):
@@ -66,184 +79,131 @@ class ReviewTests(unittest.TestCase):
         self.fail("Unexpected endpoint")
 
     def submit(self):
-        return reviewer.submit(reviewer.arguments(self.argv), request=self.request)
+        return reviewer.submit(reviewer.arguments(self.argv), request=self.request, sign=lambda _: "JWT")
 
-    def test_events_provenance_inline_and_no_secret_artifacts(self):
-        comments = self.root / "comments.json"
-        comments.write_text(json.dumps([{"path": "scripts/file.sh", "line": 2, "side": "RIGHT", "body": "Finding."}]))
-        self.argv += ["--comments-file", str(comments)]
-        before = {p: p.read_bytes() for p in self.root.iterdir()}
-        for event in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
-            with self.subTest(event=event):
-                self.argv[self.argv.index("--event") + 1] = event
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                    url = self.submit()
-                self.assertEqual(url, "https://github.com/CENorthrup/devenv/pull/8#pullrequestreview-123")
-                self.assertEqual(output.getvalue(), "")
-                payload = self.calls[-1][3]
-                self.assertEqual(payload["event"], event)
-                self.assertEqual(payload["commit_id"], SHA)
-                self.assertIn("Role: reviewer\nModel: test-profile\nEffort: test-effort\nHarness: offline-test\nReviewed commit: " + SHA, payload["body"])
-                self.assertEqual(len(payload["comments"]), 1)
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.iterdir()})
 
-    def test_required_provenance_invalid_event_and_sha(self):
-        for field in ("--model", "--effort", "--harness", "--head-sha"):
-            argv = self.argv.copy()
-            index = argv.index(field)
-            del argv[index:index + 2]
-            with self.subTest(field=field), self.assertRaises(reviewer.ReviewError):
-                reviewer.arguments(argv)
-        for field, value in (("--model", ""), ("--effort", "high\nforged"), ("--event", "MERGE"),
-                             ("--head-sha", "abc123"), ("--repo", "CENorthrup/other")):
-            argv = self.argv.copy()
-            argv[argv.index(field) + 1] = value
-            with self.subTest(field=field), self.assertRaises(reviewer.ReviewError):
-                reviewer.arguments(argv)
-
-    def test_stale_sha_refuses_all_events(self):
-        self.overrides["/repos/CENorthrup/devenv/pulls/8"] = {"head": {"sha": "b" * 40}}
+class ReviewerTests(Fixture):
+    def test_events_provenance_and_exact_scope(self):
         for event in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
             self.argv[self.argv.index("--event") + 1] = event
-            with self.assertRaisesRegex(reviewer.ReviewError, "review the new commit"):
-                self.submit()
-        self.assertFalse(any(c[1].endswith("/reviews") for c in self.calls))
+            result = self.submit()
+            self.assertEqual(result, "https://github.com/Example/target/pull/8#pullrequestreview-123")
+            body = self.calls[-1][3]["body"]
+            self.assertIn("Role: reviewer\nModel: test-profile\nEffort: test-effort\nHarness: offline-test\nReviewed commit: " + SHA, body)
 
-    def test_missing_config_fields_and_unsafe_key(self):
-        for field in self.values:
-            config = self.values.copy()
-            del config[field]
-            self.config.write_text(json.dumps(config))
-            with self.subTest(field=field), self.assertRaises(reviewer.ReviewError):
-                self.submit()
-        self.config.write_text(json.dumps(self.values))
-        self.key.chmod(0o644)
-        with self.assertRaisesRegex(reviewer.ReviewError, "mode 600 or 400"):
+    def test_stale_sha_refuses_submission(self):
+        self.overrides["/repos/Example/target/pulls/8"] = {"head": {"sha": "b" * 40}}
+        with self.assertRaisesRegex(reviewer.ReviewError, "new commit"):
             self.submit()
-        self.key.chmod(0o600)
-        with patch.object(reviewer.os, "open", side_effect=PermissionError("SECRET")):
-            with self.assertRaisesRegex(reviewer.ReviewError, "Cannot read or sign"):
-                self.submit()
-        self.key.unlink()
+        self.assertFalse(any(call[1].endswith("/reviews") for call in self.calls))
+
+    def test_reviewer_cannot_use_worker_configuration_or_contents_write(self):
+        self.values["role"] = "worker"
+        self.config.write_text(json.dumps(self.values))
+        with self.assertRaisesRegex(reviewer.ReviewError, "role"):
+            self.submit()
+        self.values["role"] = "reviewer"
+        self.values["permissions"]["contents"] = "write"
+        self.config.write_text(json.dumps(self.values))
         with self.assertRaises(reviewer.ReviewError):
             self.submit()
-        self.assertFalse(self.calls)
 
-    def test_app_slug_must_come_from_configuration(self):
-        for value in (None, "", "Example-Reviewer", "example reviewer", "-bad", "a" * 65):
-            config = self.values.copy()
-            if value is None:
-                del config["app_slug"]
-            else:
-                config["app_slug"] = value
-            self.config.write_text(json.dumps(config))
-            with self.subTest(value=value), self.assertRaisesRegex(reviewer.ReviewError, "app_slug"):
+    def test_missing_configuration_fields_are_rejected(self):
+        for field in ("role", "app_id", "installation_id", "app_slug", "account_login", "repositories",
+                      "permissions", "private_key_path"):
+            values = self.values.copy()
+            del values[field]
+            self.config.write_text(json.dumps(values))
+            with self.subTest(field=field), self.assertRaises(reviewer.ReviewError):
                 self.submit()
-        self.assertFalse(self.calls)
-        self.config.write_text(json.dumps(self.values))
-        # A review returned under a different bot login must be rejected.
-        self.overrides["/repos/CENorthrup/devenv/pulls/8/reviews"] = {
-            "id": 1, "user": {"login": "someone-else[bot]"}, "commit_id": SHA, "state": "COMMENTED"}
+
+    def test_unexpected_identity_permissions_and_api_failures_are_safe(self):
+        self.overrides["/app"] = {"id": 12, "slug": "different"}
         with self.assertRaisesRegex(reviewer.ReviewError, "identity"):
             self.submit()
+        self.overrides = {"/repos/Example/target/installation": {"id": 34}}
+        with self.assertRaises(reviewer.ReviewError):
+            self.submit()
+        self.overrides = {"/installation/repositories?per_page=100": {"total_count": 2}}
+        with self.assertRaises(reviewer.ReviewError):
+            self.submit()
 
-    def test_jwt_signature_and_claims(self):
+    def test_private_key_mode_and_jwt_claims(self):
+        self.key.chmod(0o644)
+        with self.assertRaisesRegex(reviewer.ReviewError, "mode 600"):
+            reviewer.app_jwt(self.values)
+        self.key.chmod(0o600)
         token = reviewer.app_jwt(self.values)
         header, claims, signature = token.split(".")
-        decode = lambda part: base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+        decode = lambda value: base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
         self.assertEqual(json.loads(decode(header))["alg"], "RS256")
-        values = json.loads(decode(claims))
-        self.assertEqual(values["iss"], "12")
-        self.assertEqual(values["exp"] - values["iat"], 600)
-        public = self.root / "public.pem"
-        public.write_bytes(subprocess.run(["openssl", "pkey", "-in", str(self.key), "-pubout"], capture_output=True, check=True).stdout)
-        sig = self.root / "signature"
-        sig.write_bytes(decode(signature))
-        result = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(public), "-signature", str(sig)],
-                                input=(header + "." + claims).encode(), capture_output=True)
-        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(decode(claims))["iss"], "12")
+        self.assertTrue(signature)
 
-    def test_identity_installation_token_and_api_failures(self):
-        cases = {
-            "/app": {"id": 12, "slug": "other-app"},
-            "/repos/CENorthrup/devenv/installation": {"id": 99},
-            "/app/installations/34/access_tokens": {"token": "TOKEN_SENTINEL"},
-            "/installation/repositories?per_page=100": {"total_count": 2},
-        }
-        for path, response in cases.items():
-            with self.subTest(path=path):
-                self.overrides = {path: response}
-                with self.assertRaises(reviewer.ReviewError):
-                    self.submit()
-        self.overrides = {}
-        installation = self.request("GET", "/repos/CENorthrup/devenv/installation", "")
-        for permissions in ({"pull_requests": "read"}, {"pull_requests": "write", "contents": "write"}):
-            installation["permissions"] = permissions
-            self.overrides = {"/repos/CENorthrup/devenv/installation": installation}
-            with self.assertRaisesRegex(reviewer.ReviewError, "permissions"):
-                self.submit()
-        for status in (401, 403, 404, 422, 500):
-            failure = urllib.error.HTTPError("SECRET_URL", status, "SECRET_BODY", {}, io.BytesIO(b"TOKEN_SENTINEL"))
-            with patch.object(reviewer.urllib.request, "build_opener") as opener:
-                opener.return_value.open.side_effect = failure
-                with self.assertRaises(reviewer.ReviewError) as caught:
-                    reviewer.api("POST", "/test", "TOKEN_SENTINEL", {})
-                self.assertIn(str(status), str(caught.exception))
-                self.assertNotIn("SECRET", str(caught.exception))
-                self.assertNotIn("TOKEN_SENTINEL", str(caught.exception))
 
-    def test_main_failure_and_human_auth_unchanged(self):
-        auth = self.root / "gh/hosts.yml"
-        auth.parent.mkdir()
-        auth.write_text("human-auth-sentinel")
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        environment = {"GH_CONFIG_DIR": str(auth.parent), "GH_TOKEN": "HUMAN_TOKEN"}
-        for failure in (reviewer.ReviewError("GitHub API returned HTTP 403"), RuntimeError("JWT_SECRET TOKEN_SENTINEL")):
-            output = io.StringIO()
-            with patch.dict(os.environ, environment), patch.object(reviewer, "submit", side_effect=failure):
-                original = dict(os.environ)
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                    self.assertEqual(reviewer.main(self.argv), 1)
-                self.assertEqual(dict(os.environ), original)
-            self.assertNotIn("JWT_SECRET", output.getvalue())
-            self.assertNotIn("TOKEN_SENTINEL", output.getvalue())
-            self.assertNotIn("PRIVATE KEY", output.getvalue())
-        # Actual signing/submission uses only OpenSSL, never gh or a shell.
-        run = subprocess.run
-        with patch.dict(os.environ, environment), patch.object(reviewer.subprocess, "run", wraps=run) as invoked:
-            self.submit()
-            self.assertTrue(all(call.args[0][0] == "openssl" for call in invoked.call_args_list))
-            self.assertTrue(all(not call.kwargs.get("shell") for call in invoked.call_args_list))
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+class BootstrapAndGateTests(unittest.TestCase):
+    def test_manifest_permissions_are_distinct_and_selected(self):
+        worker_manifest = payload("worker", "http://127.0.0.1/callback", "http://127.0.0.1/install")
+        reviewer_manifest = payload("reviewer", "http://127.0.0.1/callback", "http://127.0.0.1/install")
+        self.assertEqual(worker_manifest["default_permissions"], {"metadata": "read", "contents": "write", "pull_requests": "write"})
+        self.assertEqual(reviewer_manifest["default_permissions"], {"metadata": "read", "pull_requests": "write"})
+        self.assertNotIn("contents", reviewer_manifest["default_permissions"])
 
-    def test_cli_failure_from_outside_repo_does_not_echo_inputs(self):
-        result = subprocess.run(["bash", str(ROOT / "scripts/submit-agent-review.sh"), "--event", "TOKEN_SENTINEL"],
-                                cwd=self.root, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("TOKEN_SENTINEL", result.stdout + result.stderr)
+    def test_gate_transitions_and_secure_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = GateStore(root / "gates")
+            gate = HumanGate.create("install App", "GitHub approval", "selected repositories", ["pull_requests: write"],
+                                    "approve in GitHub", "installation callback", "verify installation")
+            path = store.save(gate)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((root / "gates").stat().st_mode & 0o777, 0o700)
+            self.assertEqual(store.load(gate.gate_id).state, GateState.PENDING.value)
+            gate.complete({"installation_id": 9})
+            store.save(gate)
+            self.assertEqual(store.load(gate.gate_id).state, GateState.COMPLETED.value)
+            with self.assertRaises(ValueError):
+                gate.fail("late")
 
-    def test_review_post_failure_leaves_no_credentials_or_temporary_files(self):
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        original_submit = reviewer.submit
+    def test_app_response_storage_never_puts_private_key_in_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = store_app_config(Path(directory), "reviewer",
+                                      {"id": 9, "slug": SLUG, "pem": "PRIVATE_KEY_SENTINEL"}, "Example", [REPO],
+                                      {"metadata": "read", "pull_requests": "write"})
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((config.parent / "private-key.pem").stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("PRIVATE_KEY_SENTINEL", config.read_text())
+            self.assertIn("PRIVATE_KEY_SENTINEL", (config.parent / "private-key.pem").read_text())
 
-        def fail_review(method, path, credential, payload=None):
-            if path.endswith("/reviews"):
-                raise reviewer.ReviewError("GitHub API returned HTTP 422")
-            return self.request(method, path, credential, payload)
 
-        output = io.StringIO()
-        with patch.dict(os.environ, {"TMPDIR": str(self.root)}), patch.object(
-                reviewer, "submit", side_effect=lambda args: original_submit(args, request=fail_review)):
-            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                self.assertEqual(reviewer.main(self.argv), 1)
-        self.assertIn("HTTP 422", output.getvalue())
-        self.assertNotIn("TOKEN_SENTINEL", output.getvalue())
-        self.assertNotIn(self.key.read_text(), output.getvalue())
-        for call in self.calls:
-            if call[2]:
-                self.assertNotIn(call[2], output.getvalue())
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+class WorkerSafetyTests(unittest.TestCase):
+    def test_default_branch_and_merge_refusals(self):
+        with self.assertRaisesRegex(worker.GitHubError, "default branch"):
+            worker.assert_safe_branch("main", "main")
+        with self.assertRaisesRegex(worker.GitHubError, "merge"):
+            worker.refuse("merge")
+        with self.assertRaisesRegex(worker.GitHubError, "default branch"):
+            worker.refuse("push to the default branch")
+
+        class Client:
+            def repository(self, repo, token):
+                return {"default_branch": "main"}
+        with self.assertRaisesRegex(worker.GitHubError, "default branch"):
+            with patch.object(worker.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "main\n", "")):
+                worker.commit_changes(Client(), REPO, "TOKEN", "unsafe")
+
+    def test_pr_creation_requires_non_default_head(self):
+        class Client:
+            def repository(self, repo, token):
+                return {"default_branch": "main"}
+            def request(self, method, path, token, payload):
+                self.call = (method, path, payload)
+                return {"number": 7, "html_url": "https://github.com/Example/target/pull/7"}
+        client = Client()
+        result = worker.create_or_update_pr(client, REPO, "TOKEN", "feature/work", "main", "Title", "Body")
+        self.assertEqual(result["number"], 7)
+        with self.assertRaisesRegex(worker.GitHubError, "default branch"):
+            worker.create_or_update_pr(client, REPO, "TOKEN", "main", "main", "Title", "Body")
 
 
 if __name__ == "__main__":

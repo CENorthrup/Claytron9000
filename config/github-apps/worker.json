@@ -1,0 +1,14 @@
+{
+  "role": "worker",
+  "app_name": "claytron-worker",
+  "description": "Claytron9000 implementation worker identity",
+  "homepage_url": "https://github.com",
+  "permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "pull_requests": "write"
+  },
+  "events": [],
+  "public": false,
+  "repository_selection": "selected"
+}
