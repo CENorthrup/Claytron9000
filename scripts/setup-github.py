@@ -50,6 +50,13 @@ def app_settings_url(slug: str) -> str:
     return f"https://github.com/settings/apps/{urllib.parse.quote(slug, safe='')}"
 
 
+def confirmation_page(title: str, heading: str, paragraphs: list[str]) -> bytes:
+    content = "".join(f"<p>{html.escape(value)}</p>" for value in paragraphs)
+    return ("<!doctype html><meta charset=utf-8>"
+            f"<title>{html.escape(title)}</title>"
+            f"<main><h1>{html.escape(heading)}</h1>{content}</main>").encode()
+
+
 class Setup:
     def __init__(self, args):
         self.args = args
@@ -103,10 +110,10 @@ class Setup:
             def log_message(self, fmt, *args):
                 return
 
-            def send_text(self, status, value):
-                body = value.encode()
+            def send_page(self, status, title, heading, paragraphs):
+                body = confirmation_page(title, heading, paragraphs)
                 self.send_response(status)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -170,7 +177,11 @@ class Setup:
                         print(f"App settings URL (then click Install App): {install_url}")
                         if not setup.args.no_browser:
                             webbrowser.open(install_url)
-                        self.send_text(200, f"App created. Open {install_url}, click Install App, and complete the selected-repository installation gate in GitHub.")
+                        self.send_page(200, "Claytron App registered",
+                                       "App registered — installation still required",
+                                       [f"Open {install_url}.",
+                                        "Click Install App, choose Only select repositories, select the repositories named in the Claytron gate, and click Install.",
+                                        "After GitHub redirects back here, Claytron will verify the installation and show a final confirmation."])
                         return
                     if path == "/install-callback":
                         installation_id = query.get("installation_id", [""])[0]
@@ -188,9 +199,14 @@ class Setup:
                         setup.install_gate.complete({"step": "installation-verified", "repositories": verification["repositories"]})
                         setup.gate_store.save(setup.install_gate)
                         setup.finished.set()
-                        self.send_text(200, "Claytron GitHub App installation verified. You may close this window.")
+                        self.send_page(200, "Claytron setup complete", "Installation verified",
+                                       [f"{setup.definition['app_name']} is installed for {setup.args.account}.",
+                                        "Claytron verified the selected repositories and requested permissions.",
+                                        "You may close this window. The setup command has completed."])
                         return
-                    self.send_text(404, "Not found.")
+                    self.send_page(404, "Claytron setup", "Page not found",
+                                   ["This Claytron setup callback is no longer active.",
+                                    "Restart the setup command and use its newly displayed local URL."])
                 except Exception as exc:
                     setup.result = exc if isinstance(exc, GitHubError) else GitHubError("GitHub setup failed safely; inspect state and retry.")
                     if hasattr(setup, "install_gate"):
@@ -206,7 +222,10 @@ class Setup:
                         except ValueError:
                             pass
                     setup.finished.set()
-                    self.send_text(400, "Claytron could not verify this gate. No credential details were logged.")
+                    self.send_page(400, "Claytron setup could not verify the gate",
+                                   "Verification failed",
+                                   ["Claytron could not verify this GitHub gate.",
+                                    "No credential details were logged. Inspect the saved gate state and restart setup if needed."])
 
         return Handler
 

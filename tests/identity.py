@@ -35,6 +35,22 @@ class SetupTests(unittest.TestCase):
             with mock.patch("urllib.request.urlopen", side_effect=RuntimeError("TOKEN_SENTINEL")):
                 setup.conversion("CODE_SENTINEL")
 
+    def test_confirmation_page_is_explicit_html_without_credentials(self):
+        page = setup.confirmation_page(
+            "Claytron setup complete", "Installation verified",
+            ["Claytron verified the selected repositories and requested permissions.",
+             "You may close this window."]
+        ).decode()
+        self.assertIn("<title>Claytron setup complete</title>", page)
+        self.assertIn("<h1>Installation verified</h1>", page)
+        self.assertNotIn("private-key.pem", page)
+        self.assertNotIn("jwt", page.lower())
+
+    def test_confirmation_page_escapes_callback_content(self):
+        page = setup.confirmation_page("<title>", "<heading>", ["<secret>"]).decode()
+        self.assertNotIn("<secret>", page)
+        self.assertIn("&lt;secret&gt;", page)
+
 
 if __name__ == "__main__":
     unittest.main()
