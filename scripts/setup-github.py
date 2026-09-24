@@ -118,6 +118,19 @@ class Setup:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def redirect_to_installation(self, url):
+                body = confirmation_page("Claytron App registered", "Continue to installation",
+                                         ["Registration verified. Continue to GitHub and select the requested repositories."])
+                body += f'<p><a href="{html.escape(url, quote=True)}">Open App settings to install</a></p>'.encode()
+                self.send_response(303)
+                self.send_header("Location", url)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self):
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 path = urllib.parse.urlsplit(self.path).path
@@ -175,13 +188,7 @@ class Setup:
                         install_url = app_settings_url(response.get("slug"))
                         print(install_gate.display())
                         print(f"App settings URL (then click Install App): {install_url}")
-                        if not setup.args.no_browser:
-                            webbrowser.open(install_url)
-                        self.send_page(200, "Claytron App registered",
-                                       "App registered — installation still required",
-                                       [f"Open {install_url}.",
-                                        "Click Install App, choose Only select repositories, select the repositories named in the Claytron gate, and click Install.",
-                                        "After GitHub redirects back here, Claytron will verify the installation and show a final confirmation."])
+                        self.redirect_to_installation(install_url)
                         return
                     if path == "/install-callback":
                         installation_id = query.get("installation_id", [""])[0]

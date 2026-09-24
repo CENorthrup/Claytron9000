@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
@@ -21,6 +23,20 @@ class SetupTests(unittest.TestCase):
                          "https://github.com/settings/apps/claytron-worker")
         with self.assertRaises(GitHubError):
             setup.app_settings_url("")
+
+    def test_registration_redirect_has_clickable_fallback(self):
+        handler_class = setup.Setup.handler(SimpleNamespace())
+        handler = object.__new__(handler_class)
+        handler.wfile = io.BytesIO()
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        url = setup.app_settings_url("claytron-reviewer")
+        handler.redirect_to_installation(url)
+        handler.send_response.assert_called_once_with(303)
+        handler.send_header.assert_any_call("Location", url)
+        handler.send_header.assert_any_call("Referrer-Policy", "no-referrer")
+        self.assertIn(f'href="{url}"', handler.wfile.getvalue().decode())
 
     def test_setup_requires_selected_repositories(self):
         with tempfile.TemporaryDirectory() as directory:
